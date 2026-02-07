@@ -1,1 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Housing Longhorns</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; overflow: hidden; }
+        
+        /* Sidebar / Details Panel */
+        #sidebar {
+            width: 400px;
+            background: white;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+            z-index: 1000;
+            overflow-y: auto;
+            transform: translateX(-100%);
+            transition: transform 0.3s ease;
+            position: absolute;
+            top: 0; bottom: 0; left: 0;
+            padding: 20px;
+        }
+        #sidebar.open { transform: translateX(0); }
+        
+        /* Map Container */
+        #map { flex-grow: 1; height: 100%; z-index: 1; }
+
+        /* Filter Bar (Top) */
+        .filter-bar {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: white;
+            padding: 10px 20px;
+            border-radius: 30px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+            z-index: 999;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        select, input {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+
+        /* Marker Styles */
+        .marker-pin {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid white;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+        }
+        .marker-orange { background-color: #BF5700; transform: scale(1.2); } /* UT Orange */
+        .marker-grey { background-color: #999; opacity: 0.6; }
+
+        /* Typography */
+        h1, h2, h3 { color: #333; }
+        .close-btn { cursor: pointer; float: right; font-size: 24px; font-weight: bold; }
+        .unit-card {
+            border: 1px solid #eee;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            background: #fafafa;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="filter-bar">
+        <strong>Housing Longhorns</strong>
+        <select id="priceFilter">
+            <option value="10000">Max Price: Any</option>
+            <option value="800">< $800</option>
+            <option value="1000">< $1000</option>
+            <option value="1200">< $1200</option>
+            <option value="1500">< $1500</option>
+        </select>
+        <select id="bedFilter">
+            <option value="0">Beds: Any</option>
+            <option value="1">1+</option>
+            <option value="2">2+</option>
+            <option value="3">3+</option>
+            <option value="4">4+</option>
+        </select>
+    </div>
+
+    <div id="sidebar">
+        <span class="close-btn" onclick="closeSidebar()">&times;</span>
+        <h2 id="detail-title">Loading...</h2>
+        <p id="detail-address" style="color: #666;"></p>
+        <a id="detail-link" href="#" target="_blank">Visit Website</a>
+        <hr>
+        <h3>Available Units</h3>
+        <div id="units-container">
+            </div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // ---------------- CONFIGURATION ---------------- //
+        // REPLACE THESE WITH YOUR ACTUAL SUPABASE KEYS
+        const SUPABASE_URL = 'YOUR_SUPABASE_URL_HERE';
+        const SUPABASE_KEY = 'YOUR_SUPABASE_ANON_KEY_HERE';
+        const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // ---------------- MAP SETUP ---------------- //
+        // Center on UT West Campus
+        const map = L.map('map').setView([30.288, -97.745], 16);
+
+        // Add a clean map tile layer (CartoDB Positron)
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+            maxZoom: 19
+        }).addTo(map);
+
+        let buildingsData = [];
+        let unitsData = [];
+        let markers = [];
+
+        // ---------------- DATA FETCHING ---------------- //
+        async function fetchData() {
+            // Fetch Buildings
+            const { data: bData, error: bError } = await supabase.from('buildings').select('*');
+            if (bError) console.error(bError);
+            buildingsData = bData || [];
+
+            // Fetch Units
+            const { data: uData, error: uError } = await supabase.from('units').select('*');
+            if (uError) console.error(uError);
+            unitsData = uData || [];
+
+            renderMap();
+        }
+
+        // ---------------- RENDER MAP ---------------- //
+        function renderMap() {
+            // Clear existing markers
+            markers.forEach(m => map.removeLayer(m));
+            markers = [];
+
+            // Get Filter Values
+            const maxPrice = parseInt(document.getElementById('priceFilter').value);
+            const minBeds = parseInt(document.getElementById('bedFilter').value);
+
+            buildingsData.forEach(building => {
+                // Find matching units for this building
+                const buildingUnits = unitsData.filter(u => u.building_id === building.id);
+                
+                // Check if ANY unit in this building matches criteria
+                const hasMatch = buildingUnits.some(u => 
+                    u.price <= maxPrice && u.bedrooms >= minBeds
+                );
+
+                // Create custom icon based on match
+                const iconClass = hasMatch ? 'marker-orange' : 'marker-grey';
+                const zIdx = hasMatch ? 1000 : 500; // Bring matches to front
+
+                const customIcon = L.divIcon({
+                    className: 'custom-div-icon',
+                    html: `<div class="marker-pin ${iconClass}"></div>`,
+                    iconSize: [20, 20],
+                    iconAnchor: [10, 10]
+                });
+
+                const marker = L.marker([building.lat, building.lng], { icon: customIcon, zIndexOffset: zIdx })
+                    .addTo(map)
+                    .on('click', () => showDetails(building, buildingUnits));
+                
+                markers.push(marker);
+            });
+        }
+
+        // ---------------- SIDEBAR LOGIC ---------------- //
+        function showDetails(building, units) {
+            document.getElementById('sidebar').classList.add('open');
+            document.getElementById('detail-title').innerText = building.name;
+            document.getElementById('detail-address').innerText = building.address;
+            document.getElementById('detail-link').href = `https://${building.website_url}`;
+            
+            const container = document.getElementById('units-container');
+            container.innerHTML = '';
+
+            if(units.length === 0) {
+                container.innerHTML = '<p>No data available.</p>';
+                return;
+            }
+
+            units.forEach(u => {
+                const div = document.createElement('div');
+                div.className = 'unit-card';
+                div.innerHTML = `
+                    <strong>${u.unit_name}</strong><br>
+                    ${u.bedrooms} Bed / ${u.bathrooms} Bath<br>
+                    $${u.price} / month
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        function closeSidebar() {
+            document.getElementById('sidebar').classList.remove('open');
+        }
+
+        // ---------------- LISTENERS ---------------- //
+        document.getElementById('priceFilter').addEventListener('change', renderMap);
+        document.getElementById('bedFilter').addEventListener('change', renderMap);
+
+        // Initialize
+        fetchData();
+
+    </script>
+</body>
+</html>
 
