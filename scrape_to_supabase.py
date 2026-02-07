@@ -4,19 +4,19 @@ from supabase import create_client, Client
 
 # --- 1. CONFIGURATION ---
 # Get these from your Supabase Dashboard -> Settings -> API
-SUPABASE_URL = "YOUR_SUPABASE_URL"
+SUPABASE_URL = "https://ienehkupdokrcjmfxtgj.supabase.co"
 # IMPORTANT: Use the "service_role" key here (it bypasses Row Level Security), 
 # NOT the "anon" key. Keep this key secret!
-SUPABASE_KEY = "YOUR_SUPABASE_SERVICE_ROLE_KEY" 
+SUPABASE_KEY = "sb_secret_Phb71iHk6y6ghw-1Kbe_VA_BDV-dS-r" 
 
 # Get this from SerpAPI.com
-SERPAPI_KEY = "YOUR_SERPAPI_KEY"
+SERPAPI_KEY = "9473b35ade77a364d911b7a351cc886c284a8ed91ccd4bb28fff25835421ebb2"
 
 # Initialize connection to Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def fetch_and_upload():
-    print("🚀 Starting scrape...")
+    print("Starting scrape...")
     
     # Search for apartments in West Campus
     params = {
@@ -32,7 +32,7 @@ def fetch_and_upload():
     results = search.get_dict()
     local_results = results.get("local_results", [])
 
-    print(f"✅ Found {len(local_results)} buildings on Google Maps.")
+    print(f"Found {len(local_results)} buildings on Google Maps.")
 
     for place in local_results:
         # 1. Extract Data
@@ -45,7 +45,7 @@ def fetch_and_upload():
         if not gps.get("latitude"):
             continue
 
-        print(f"   📍 Uploading: {name}")
+        print(f"   Uploading: {name}")
 
         # 2. Prepare the row for Supabase
         building_data = {
@@ -63,23 +63,11 @@ def fetch_and_upload():
             # otherwise it will just keep adding duplicates. 
             # For MVP, a simple insert is fine if you empty the table first.
             supabase.table("buildings").insert(building_data).execute()
-            
-            # BONUS: Auto-generate dummy units so the map works immediately
-            # (Since Google doesn't give us unit prices yet)
-            # We will fetch the building ID we just created to link the units
-            response = supabase.table("buildings").select("id").eq("name", name).execute()
-            new_building_id = response.data[0]['id']
-            
-            dummy_units = [
-                {"building_id": new_building_id, "unit_name": "2x2 Shared", "bedrooms": 2, "bathrooms": 2, "price": 950},
-                {"building_id": new_building_id, "unit_name": "4x4 Standard", "bedrooms": 4, "bathrooms": 4, "price": 800}
-            ]
-            supabase.table("units").insert(dummy_units).execute()
 
         except Exception as e:
-            print(f"      ⚠️ Error: {e}")
+            print(f"      Error: {e}")
 
-    print("🎉 Done! Data is now in Supabase.")
+    print("Done! Data is now in Supabase.")
 
 if __name__ == "__main__":
     fetch_and_upload()
