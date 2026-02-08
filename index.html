@@ -371,9 +371,21 @@
                 const myUnits = unitsData.filter(u => u.building_id === building.id);
                 
                 const hasMatch = myUnits.some(u => {
-                    const priceMatch = u.price >= currentFilters.minPrice && u.price <= currentFilters.maxPrice;
-                    const bedMatch = currentFilters.beds.length === 0 || currentFilters.beds.some(b => (b === 4 ? u.bedrooms >= 4 : u.bedrooms === b));
-                    const bathMatch = currentFilters.baths.length === 0 || currentFilters.baths.some(b => (b === 3 ? u.bathrooms >= 3 : u.bathrooms === b));
+                    const priceMatch =
+                        u.price != null &&
+                        u.price >= currentFilters.minPrice &&
+                        u.price <= currentFilters.maxPrice;
+
+                    const bedMatch =
+                        u.bedrooms != null &&
+                        (currentFilters.beds.length === 0 ||
+                        currentFilters.beds.some(b => (b === 4 ? u.bedrooms >= 4 : u.bedrooms === b)));
+
+                    const bathMatch =
+                        u.bathrooms != null &&
+                        (currentFilters.baths.length === 0 ||
+                        currentFilters.baths.some(b => (b === 3 ? u.bathrooms >= 3 : u.bathrooms === b)));
+
                     return priceMatch && bedMatch && bathMatch;
                 });
 
