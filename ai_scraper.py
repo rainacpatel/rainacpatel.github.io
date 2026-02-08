@@ -1,127 +1,124 @@
 import os
 import time
-import typing_extensions
+import json
+from typing import List
 from google import genai
 from pydantic import BaseModel, Field
-from typing import List
 from supabase import create_client, Client
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
 SUPABASE_URL = "https://ienehkupdokrcjmfxtgj.supabase.co"
 SUPABASE_KEY = "sb_secret_Phb71iHk6y6ghw-1Kbe_VA_BDV-dS-r"
-GEMINI_API_KEY = "AIzaSyBLfa108O5riVDnryu3aHh285G2CINnOVo"
+GEMINI_API_KEY = "AIzaSyAh7vv6YG_qvA3r1Wsff7cYT57Jnm1mkiQ"
 
-# Initialize Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# Initialize Gemini
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# --- 1. DEFINE THE DATA STRUCTURE ---
-# Gemini will force the output to match this EXACTLY.
-class ApartmentUnit(BaseModel):
-    unit_name: str = Field(description="The name of the floorplan, e.g., 'The Rio', '4x4 Shared'")
-    bedrooms: int = Field(description="Number of bedrooms")
-    bathrooms: int = Field(description="Number of bathrooms")
-    price: int = Field(description="Monthly rent in USD. If range, take lowest.")
+# --- LIST AVAILABLE MODELS ---
+print("Available models:")
+for m in genai_client.models.list():
+    print(" -", m.name)
+    if hasattr(m, "description"):
+        print("   >", m.description)
 
-class BuildingExtraction(BaseModel):
-    units: List[ApartmentUnit]
 
-# --- 2. CLEAN HTML HELPER ---
+# --- 1. CLEAN HTML HELPER ---
 def get_clean_text(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
-    # Remove junk elements
-    for script in soup(["script", "style", "svg", "footer", "nav", "header"]):
+    for script in soup(["script", "style", "svg", "footer", "nav", "header", "noscript"]):
         script.decompose()
-    # Get text
     text = soup.get_text(separator="\n")
-    # Remove empty lines
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return "\n".join(lines[:6000]) # Gemini handles large context well
+    # Limit to first 7000 lines to prevent huge prompts
+    return "\n".join([line.strip() for line in text.splitlines() if line.strip()][:7000])
 
-# --- 3. MAIN SCRAPER ---
+# --- 2. VALIDATE URL ---
+def validate_url(url: str) -> str:
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+# --- 3. GEMINI CALL ---
+def query_gemini(prompt: str) -> dict:
+    try:
+        response = genai_client.models.generate_content(
+            model="models/gemini-2.5-flash",  # Updated model
+            contents=prompt,
+            config={"response_mime_type": "application/json"}
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        print(f"   ❌ Gemini API error: {e}")
+        return {}
+
+# --- 4. MAIN SCRAPER ---
 def run_gemini_scraper():
-    # Fetch buildings from Supabase that have a website
     response = supabase.table("buildings").select("*").neq("website_url", "null").execute()
     buildings = response.data
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True) 
+        browser = p.chromium.launch(headless=True)
         
         for building in buildings:
             print(f"------------\nProcessing: {building['name']}")
-            
+            page = None
             try:
-                # 1. Scrape Website
-                page = browser.new_page()
-                print(f"   🌍 Loading {building['website_url']}...")
-                page.goto(building['website_url'], timeout=60000)
-                
-                # Scroll to trigger lazy loading
+                context = browser.new_context(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.5845.97 Safari/537.36")
+                page = context.new_page()
+
+
+                url = validate_url(building['website_url'])
+                try:
+                    page.goto(url, timeout=120000, wait_until="domcontentloaded")
+                except PlaywrightTimeoutError:
+                    print(f"   ⚠ Timeout navigating to {url}, skipping page.")
+                    continue
+
+                # Scroll to bottom to load lazy content
                 page.mouse.wheel(0, 5000)
-                time.sleep(3) 
+                time.sleep(5)  # Let dynamic content load
 
                 clean_text = get_clean_text(page.content())
-                print(f"   📄 Extracted {len(clean_text)} characters of text.")
 
-                # 2. Ask Gemini
-                response = genai_client.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=f"""
-                Extract all apartment floorplans with:
-                - unit_name
-                - bedrooms
-                - bathrooms
-                - price (lowest if range)
+                # --- Gemini Prompt ---
+                prompt = f"""
+                TEXT:
+                Extract all apartment floorplans from the text below.
+                Return the data as a JSON object with a key "units" containing a list of objects.
+                Each object must have:
+                - "unit_name": string
+                - "bedrooms": integer (if unknown, use null)
+                - "bathrooms": integer (if unknown, use null)
+                - "price": integer (lowest if range, if unknown, use null)
 
-                Return JSON ONLY matching the schema.
-
+                Make sure the JSON is valid and every field is filled with a value.
                 TEXT:
                 {clean_text}
-                """,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_schema": BuildingExtraction
-                }
-                )
+                """
 
-                units_found = response.parsed.units
-
-
-                # 3. Parse Response
-                # Gemini returns a string, but because we enforced schema, we can parse it directly
-                import json
-                result_json = json.loads(response.text)
-                
-                # Depending on SDK version, result might be the dict or the list inside
-                units_found = result_json.get("units", [])
-                
+                raw_json = query_gemini(prompt)
+                units_found = raw_json.get("units", [])
                 print(f"   ✅ Found {len(units_found)} units!")
 
-                # 4. Upload to Supabase
+                # Insert units into Supabase
                 for unit in units_found:
-                    print(f"      -> {unit['unit_name']}: ${unit['price']}")
-                    
                     data = {
                         "building_id": building['id'],
-                        "unit_name": unit['unit_name'],
-                        "bedrooms": unit['bedrooms'],
-                        "bathrooms": unit['bathrooms'],
-                        "price": unit['price']
+                        "unit_name": unit.get('unit_name'),
+                        "bedrooms": unit.get('bedrooms'),
+                        "bathrooms": unit.get('bathrooms'),
+                        "price": unit.get('price')
                     }
-                    
-                    # Insert into DB
                     supabase.table("units").insert(data).execute()
+                    print(f"      -> {unit.get('unit_name')}: ${unit.get('price')}")
 
             except Exception as e:
-                print(f"   ❌ Error: {e}")
-            
+                print(f"   ❌ Error processing building: {e}")
             finally:
-                page.close()
-        
+                if page:
+                    page.close()
+
         browser.close()
 
 if __name__ == "__main__":
