@@ -17,16 +17,41 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def fetch_and_upload():
     print("Starting scrape...")
-    
-    # Search for apartments in West Campus
-    params = {
-        "engine": "google_maps",
-        "q": "Student Apartments in West Campus, Austin, TX",
-        "ll": "@30.286,-97.742,15z", # West Campus Coordinates
-        "type": "search",
-        "api_key": SERPAPI_KEY,
-        "limit": 20 # How many results to fetch
-    }
+
+    all_results = []
+    max_results = 50  # Your target
+    current_start = 0
+
+    while len(all_results) < max_results:
+            params = {
+                "engine": "google_maps",
+                "q": "Student Apartments in West Campus, Austin, TX",
+                "ll": "@30.286,-97.742,15z",
+                "type": "search",
+                "api_key": SERPAPI_KEY,
+                "start": current_start  # Offset for pagination
+            }
+
+            search = GoogleSearch(params)
+            results = search.get_dict()
+            local_results = results.get("local_results", [])
+
+            if not local_results:
+                break  # Stop if no more results are found
+
+            all_results.extend(local_results)
+            current_start += 20  # Move to the next page
+        
+            # Prevent infinite loops if Google has fewer results than our max
+            if len(local_results) < 20:
+                break
+
+            all_results.extend(local_results)
+            current_start += 20  # Move to the next page
+        
+            # Prevent infinite loops if Google has fewer results than our max
+            if len(local_results) < 20:
+                break
 
     search = GoogleSearch(params)
     results = search.get_dict()
